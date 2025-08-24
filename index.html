@@ -406,17 +406,17 @@
             let boxCompleted = false;
             if (type === 'h') {
                 if (y < BOXES && vLines[x][y] && vLines[x + 1][y] && hLines[x][y + 1]) {
-                    boxes[x][y] = currentPlayer; scores[currentPlayer]++; boxCompleted = true;
+                    if (!boxes[x][y]) { boxes[x][y] = currentPlayer; scores[currentPlayer]++; boxCompleted = true; }
                 }
                 if (y > 0 && vLines[x][y - 1] && vLines[x + 1][y - 1] && hLines[x][y - 1]) {
-                    boxes[x][y - 1] = currentPlayer; scores[currentPlayer]++; boxCompleted = true;
+                    if (!boxes[x][y-1]) { boxes[x][y - 1] = currentPlayer; scores[currentPlayer]++; boxCompleted = true; }
                 }
             } else { 
                 if (x < BOXES && hLines[x][y] && hLines[x][y + 1] && vLines[x + 1][y]) {
-                    boxes[x][y] = currentPlayer; scores[currentPlayer]++; boxCompleted = true;
+                    if (!boxes[x][y]) { boxes[x][y] = currentPlayer; scores[currentPlayer]++; boxCompleted = true; }
                 }
                 if (x > 0 && hLines[x - 1][y] && hLines[x - 1][y + 1] && vLines[x - 1][y]) {
-                    boxes[x - 1][y] = currentPlayer; scores[currentPlayer]++; boxCompleted = true;
+                    if (!boxes[x-1][y]) { boxes[x - 1][y] = currentPlayer; scores[currentPlayer]++; boxCompleted = true; }
                 }
             }
             return boxCompleted;
@@ -468,7 +468,8 @@
                             for (const [nx, ny] of neighbors) {
                                 if (nx >= 0 && nx < BOXES && ny >= 0 && ny < BOXES && !visited[nx][ny]) {
                                     if (countSidesOnTemp(nx, ny, h, v) === 2) {
-                                        if ((nx === cx && !v[cx][Math.min(ny, cy)]) || (ny === cy && !h[Math.min(nx, cx)][cy])) {
+                                        // Check if the boxes are connected by an empty line
+                                        if ((nx === cx && !v[Math.min(nx,cx)][Math.min(ny, cy)]) || (ny === cy && !h[Math.min(nx, cx)][Math.min(ny,cy)+1])) {
                                             visited[nx][ny] = true;
                                             queue.push([nx, ny]);
                                         }
@@ -483,37 +484,73 @@
             return chains;
         }
 
+        /**
+         * [UPDATED] Simulates the outcome of a sacrificial move, assuming optimal play from both sides.
+         * This function calculates the net score difference from the AI's perspective.
+         */
         function simulateEndgame(move) {
+            // Create a deep copy of the game state to simulate on
             let tempHLines = JSON.parse(JSON.stringify(hLines));
             let tempVLines = JSON.parse(JSON.stringify(vLines));
             let tempBoxes = JSON.parse(JSON.stringify(boxes));
-            if (move.type === 'h') tempHLines[move.x][move.y] = currentPlayer;
-            else tempVLines[move.x][move.y] = currentPlayer;
-            let opponentScore = 0;
+            
+            // Apply the AI's sacrificial move
+            if (move.type === 'h') {
+                tempHLines[move.x][move.y] = currentPlayer;
+            } else {
+                tempVLines[move.x][move.y] = currentPlayer;
+            }
+
+            // --- Calculate the number of boxes the opponent gets immediately ---
+            // This is the length of the chain the AI just opened.
+            let boxesGivenAway = 0;
             let newBoxCompleted;
             do {
                 newBoxCompleted = false;
                 for (let i = 0; i < BOXES; i++) {
                     for (let j = 0; j < BOXES; j++) {
+                        // If a box is not yet owned and now has 4 sides
                         if (!tempBoxes[i][j] && countSidesOnTemp(i, j, tempHLines, tempVLines) === 4) {
-                            tempBoxes[i][j] = 'opponent';
-                            opponentScore++;
+                            tempBoxes[i][j] = 'opponent'; // Mark as taken by opponent in simulation
+                            boxesGivenAway++;
                             newBoxCompleted = true;
+                            
+                            // To continue the simulation, we need to fill in the last line of this box
+                            // so analyzeChains works correctly. Find the missing line and fill it.
                             if (!tempHLines[i][j]) tempHLines[i][j] = 'opponent';
-                            else if (!tempHLines[i][j+1]) tempHLines[i][j+1] = 'opponent';
+                            else if (!tempHLines[i][j + 1]) tempHLines[i][j + 1] = 'opponent';
                             else if (!tempVLines[i][j]) tempVLines[i][j] = 'opponent';
-                            else if (!tempVLines[i+1][j]) tempVLines[i+1][j] = 'opponent';
+                            else if (!tempVLines[i + 1][j]) tempVLines[i + 1][j] = 'opponent';
                         }
                     }
                 }
             } while (newBoxCompleted);
+
+            // --- Distribute the remaining chains ---
+            // Find all remaining chains of 2-sided boxes
             const remainingChains = analyzeChains(tempHLines, tempVLines);
-            let myScore = 0;
+            
+            // Sort chains by length, smallest to largest
+            remainingChains.sort((a, b) => a - b);
+
+            let myScoreFromChains = 0;
+            let opponentScoreFromChains = 0;
+
+            // After the AI's sacrifice, the opponent must open the next chain.
+            // They will open the smallest one, which the AI will get.
             for (let i = 0; i < remainingChains.length; i++) {
-                if (i % 2 === 0) myScore += remainingChains[i];
-                else opponentScore += remainingChains[i];
+                if (i % 2 === 0) { // AI gets the 1st, 3rd, 5th... smallest chains
+                    myScoreFromChains += remainingChains[i];
+                } else { // Opponent gets the 2nd, 4th, 6th...
+                    opponentScoreFromChains += remainingChains[i];
+                }
             }
-            return myScore - opponentScore;
+
+            // The net score is the difference between what the AI gets and what the opponent gets.
+            const opponentTotalScore = boxesGivenAway + opponentScoreFromChains;
+            const myTotalScore = myScoreFromChains;
+            
+            return myTotalScore - opponentTotalScore;
         }
         
         function analyzeSafeMove(move) {
@@ -533,31 +570,69 @@
         }
 
         function getBestMove() {
-            let safeMoves = [], sacrificialMoves = [];
+            let safeMoves = [], sacrificialMoves = [], winningMoves = [];
             
+            // Prioritize winning moves that complete a box
             for (let i = 0; i < BOXES; i++) {
                 for (let j = 0; j < DOTS; j++) {
                     if (!hLines[i][j]) {
-                        if ((j < BOXES && countSides(i, j) === 3) || (j > 0 && countSides(i, j - 1) === 3)) return { type: 'h', x: i, y: j };
+                        if ((j < BOXES && countSides(i, j) === 3) || (j > 0 && countSides(i, j - 1) === 3)) {
+                            winningMoves.push({ type: 'h', x: i, y: j });
+                        }
+                    }
+                }
+            }
+             for (let i = 0; i < DOTS; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    if (!vLines[i][j]) {
+                        if ((i < BOXES && countSides(i, j) === 3) || (i > 0 && countSides(i - 1, j) === 3)) {
+                            winningMoves.push({ type: 'v', x: i, y: j });
+                        }
+                    }
+                }
+            }
+            if(winningMoves.length > 0) return winningMoves[0];
+
+
+            // Categorize all other possible moves
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < DOTS; j++) {
+                    if (!hLines[i][j]) {
+                        // Temporarily make the move to check its consequences
                         hLines[i][j] = currentPlayer; 
-                        let c3 = (j < BOXES && countSides(i, j) === 3) || (j > 0 && countSides(i, j - 1) === 3);
-                        hLines[i][j] = 0; 
-                        if (!c3) safeMoves.push({ type: 'h', x: i, y: j }); else sacrificialMoves.push({ type: 'h', x: i, y: j });
+                        let createsThirdSide = false;
+                        if (j < BOXES && countSides(i, j) === 3) createsThirdSide = true;
+                        if (j > 0 && countSides(i, j - 1) === 3) createsThirdSide = true;
+                        hLines[i][j] = 0; // Revert the move
+                        
+                        if (createsThirdSide) {
+                            sacrificialMoves.push({ type: 'h', x: i, y: j });
+                        } else {
+                            safeMoves.push({ type: 'h', x: i, y: j });
+                        }
                     }
                 }
             }
             for (let i = 0; i < DOTS; i++) {
                 for (let j = 0; j < BOXES; j++) {
                     if (!vLines[i][j]) {
-                        if ((i < BOXES && countSides(i, j) === 3) || (i > 0 && countSides(i - 1, j) === 3)) return { type: 'v', x: i, y: j };
-                        vLines[i][j] = currentPlayer; 
-                        let c3 = (i < BOXES && countSides(i, j) === 3) || (i > 0 && countSides(i - 1, j) === 3);
-                        vLines[i][j] = 0; 
-                        if (!c3) safeMoves.push({ type: 'v', x: i, y: j }); else sacrificialMoves.push({ type: 'v', x: i, y: j });
+                        // Temporarily make the move to check its consequences
+                        vLines[i][j] = currentPlayer;
+                        let createsThirdSide = false;
+                        if (i < BOXES && countSides(i, j) === 3) createsThirdSide = true;
+                        if (i > 0 && countSides(i - 1, j) === 3) createsThirdSide = true;
+                        vLines[i][j] = 0; // Revert the move
+
+                        if (createsThirdSide) {
+                            sacrificialMoves.push({ type: 'v', x: i, y: j });
+                        } else {
+                            safeMoves.push({ type: 'v', x: i, y: j });
+                        }
                     }
                 }
             }
             
+            // Strategy 1: If there are safe moves, pick the one that creates the fewest 2-sided boxes
             if (safeMoves.length > 0) {
                 let minScore = Infinity;
                 let bestSafeMoves = [];
@@ -573,6 +648,7 @@
                 return bestSafeMoves[Math.floor(Math.random() * bestSafeMoves.length)];
             }
             
+            // Strategy 2: If we MUST make a sacrifice, use the simulation to pick the best one
             if (sacrificialMoves.length > 0) {
                 let bestScoreDiff = -Infinity;
                 let bestMoves = [];
@@ -587,7 +663,8 @@
                 }
                 return bestMoves[Math.floor(Math.random() * bestMoves.length)];
             }
-            return null;
+
+            return null; // No moves left
         }
 
         // --- Event Listeners ---
