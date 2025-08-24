@@ -472,7 +472,7 @@
         // --- AI Suggester Logic ---
 
         /**
-         * Counts the number of sides for a given box.
+         * Counts the number of sides for a given box on the main game board.
          * @param {number} x - The x-coordinate of the box.
          * @param {number} y - The y-coordinate of the box.
          * @returns {number} - The number of sides (0-4).
@@ -487,6 +487,66 @@
         }
 
         /**
+         * Counts sides on a temporary, simulated game board.
+         */
+        function countSidesOnTemp(x, y, tempHLines, tempVLines) {
+            let count = 0;
+            if (tempHLines[x][y]) count++;
+            if (tempHLines[x][y + 1]) count++;
+            if (tempVLines[x][y]) count++;
+            if (tempVLines[x + 1][y]) count++;
+            return count;
+        }
+
+        /**
+         * Simulates the result of a sacrificial move to see how many boxes the opponent would get.
+         * @param {object} move - The move to simulate {type, x, y}.
+         * @returns {number} - The number of boxes the opponent would capture.
+         */
+        function calculateSacrificeCost(move) {
+            // Create deep copies of the game state to simulate on
+            let tempHLines = JSON.parse(JSON.stringify(hLines));
+            let tempVLines = JSON.parse(JSON.stringify(vLines));
+            let tempBoxes = JSON.parse(JSON.stringify(boxes));
+
+            // Apply the initial sacrificial move
+            if (move.type === 'h') {
+                tempHLines[move.x][move.y] = 'player';
+            } else {
+                tempVLines[move.x][move.y] = 'player';
+            }
+
+            let boxesTaken = 0;
+            let newBoxCompleted;
+
+            do {
+                newBoxCompleted = false;
+                // Iterate over all boxes to see if any can be completed by the opponent
+                for (let i = 0; i < BOXES; i++) {
+                    for (let j = 0; j < BOXES; j++) {
+                        // If this box is not yet taken in our simulation
+                        if (!tempBoxes[i][j]) {
+                            // and it now has 4 sides
+                            if (countSidesOnTemp(i, j, tempHLines, tempVLines) === 4) {
+                                tempBoxes[i][j] = 'opponent'; // Mark as taken
+                                boxesTaken++;
+                                newBoxCompleted = true; // A box was taken, so we must loop again to check for more chain reactions
+
+                                // To continue the simulation, we must "draw" the 4th line that completed this box.
+                                if (!tempHLines[i][j]) tempHLines[i][j] = 'opponent';
+                                else if (!tempHLines[i][j + 1]) tempHLines[i][j + 1] = 'opponent';
+                                else if (!tempVLines[i][j]) tempVLines[i][j] = 'opponent';
+                                else if (!tempVLines[i + 1][j]) tempVLines[i + 1][j] = 'opponent';
+                            }
+                        }
+                    }
+                }
+            } while (newBoxCompleted);
+
+            return boxesTaken;
+        }
+
+        /**
          * The main AI function to determine the best move.
          * Strategy:
          * 1. If a move completes a box, take it.
@@ -498,33 +558,18 @@
             let safeMoves = [];
             let sacrificialMoves = [];
 
-            // --- Horizontal Lines ---
+            // --- Find all possible moves and categorize them ---
+            // Horizontal Lines
             for (let i = 0; i < BOXES; i++) {
                 for (let j = 0; j < DOTS; j++) {
                     if (!hLines[i][j]) {
-                        // Temporarily make the move
-                        hLines[i][j] = currentPlayer;
-                        let completesBox = false;
-                        let createsThirdSide = false;
-
-                        // Check box below
-                        if (j < BOXES) {
-                            const sides = countSides(i, j);
-                            if (sides === 4) completesBox = true;
-                            if (sides === 3) createsThirdSide = true;
-                        }
-                        // Check box above
-                        if (j > 0) {
-                            const sides = countSides(i, j - 1);
-                            if (sides === 4) completesBox = true;
-                            if (sides === 3) createsThirdSide = true;
-                        }
-                        
-                        // Undo the move
-                        hLines[i][j] = 0;
-                        
-                        // Categorize the move
+                        let completesBox = (j < BOXES && countSides(i, j) === 3) || (j > 0 && countSides(i, j - 1) === 3);
                         if (completesBox) return { type: 'h', x: i, y: j }; // Priority 1: Take a box
+
+                        hLines[i][j] = currentPlayer; // Temporarily make move
+                        let createsThirdSide = (j < BOXES && countSides(i, j) === 3) || (j > 0 && countSides(i, j - 1) === 3);
+                        hLines[i][j] = 0; // Undo move
+
                         if (!createsThirdSide) {
                             safeMoves.push({ type: 'h', x: i, y: j });
                         } else {
@@ -533,33 +578,17 @@
                     }
                 }
             }
-
-            // --- Vertical Lines ---
+            // Vertical Lines
             for (let i = 0; i < DOTS; i++) {
                 for (let j = 0; j < BOXES; j++) {
                     if (!vLines[i][j]) {
-                        // Temporarily make the move
-                        vLines[i][j] = currentPlayer;
-                        let completesBox = false;
-                        let createsThirdSide = false;
-
-                        // Check box to the right
-                        if (i < BOXES) {
-                            const sides = countSides(i, j);
-                            if (sides === 4) completesBox = true;
-                            if (sides === 3) createsThirdSide = true;
-                        }
-                        // Check box to the left
-                        if (i > 0) {
-                            const sides = countSides(i - 1, j);
-                            if (sides === 4) completesBox = true;
-                            if (sides === 3) createsThirdSide = true;
-                        }
-
-                        // Undo the move
-                        vLines[i][j] = 0;
-
+                        let completesBox = (i < BOXES && countSides(i, j) === 3) || (i > 0 && countSides(i - 1, j) === 3);
                         if (completesBox) return { type: 'v', x: i, y: j }; // Priority 1
+
+                        vLines[i][j] = currentPlayer; // Temporarily make move
+                        let createsThirdSide = (i < BOXES && countSides(i, j) === 3) || (i > 0 && countSides(i - 1, j) === 3);
+                        vLines[i][j] = 0; // Undo move
+
                         if (!createsThirdSide) {
                             safeMoves.push({ type: 'v', x: i, y: j });
                         } else {
@@ -569,16 +598,26 @@
                 }
             }
             
-            // Priority 2: Make a safe move
+            // Priority 2: Make a safe move if available
             if (safeMoves.length > 0) {
-                return safeMoves[Math.floor(Math.random() * safeMoves.length)]; // Pick a random safe move
+                return safeMoves[Math.floor(Math.random() * safeMoves.length)];
             }
             
-            // Priority 3: Make a sacrificial move (if no other option)
-            // A more advanced AI would calculate the shortest chain to sacrifice.
-            // For this version, we just pick any of the available "bad" moves.
+            // Priority 3: No safe moves, so find the best sacrificial move
             if (sacrificialMoves.length > 0) {
-                return sacrificialMoves[Math.floor(Math.random() * sacrificialMoves.length)];
+                let minBoxesGiven = Infinity;
+                let bestMoves = [];
+
+                for (const move of sacrificialMoves) {
+                    const boxesGiven = calculateSacrificeCost(move);
+                    if (boxesGiven < minBoxesGiven) {
+                        minBoxesGiven = boxesGiven;
+                        bestMoves = [move];
+                    } else if (boxesGiven === minBoxesGiven) {
+                        bestMoves.push(move);
+                    }
+                }
+                return bestMoves[Math.floor(Math.random() * bestMoves.length)];
             }
 
             return null; // No moves left
