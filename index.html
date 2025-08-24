@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dots and Boxes with Suggester</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+            touch-action: none; /* Prevents scrolling on mobile */
+        }
+        canvas {
+            cursor: pointer;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        }
+        .player-card {
+            transition: all 0.3s ease-in-out;
+            border-width: 4px;
+        }
+        .player-red.active {
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.7);
+            border-color: #ef4444;
+        }
+        .player-blue.active {
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.7);
+            border-color: #3b82f6;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-2xl mx-auto">
+        <h1 class="text-3xl md:text-4xl font-bold text-center mb-4">Dots and Boxes</h1>
+        <p class="text-center text-gray-600 dark:text-gray-400 mb-2">The AI will suggest the best move for the current player in yellow.</p>
+        <p id="instructionText" class="text-center text-indigo-500 dark:text-indigo-400 font-semibold mb-6">Click a player's card to begin the game.</p>
+        
+        <!-- Player Info and Scores -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div id="player-red-card" class="player-card player-red bg-white dark:bg-gray-800 p-4 rounded-lg border-transparent">
+                <h2 class="text-xl font-bold text-red-500">Player Red</h2>
+                <p class="text-3xl font-bold" id="score-red">0</p>
+            </div>
+            <div id="player-blue-card" class="player-card player-blue bg-white dark:bg-gray-800 p-4 rounded-lg text-right border-transparent">
+                <h2 class="text-xl font-bold text-blue-500">Player Blue</h2>
+                <p class="text-3xl font-bold" id="score-blue">0</p>
+            </div>
+        </div>
+
+        <!-- Game Canvas -->
+        <div class="relative">
+            <canvas id="gameCanvas" class="bg-white dark:bg-gray-800 w-full"></canvas>
+            <div id="messageBox" class="absolute inset-0 bg-black bg-opacity-60 flex-col items-center justify-center rounded-lg text-white text-center p-4 hidden">
+                <p id="messageText" class="text-3xl font-bold mb-4"></p>
+                <button id="newGameBtn" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg text-lg">Play Again</button>
+            </div>
+        </div>
+        
+        <div class="mt-4 flex justify-between items-center">
+            <button id="skipBtn" class="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg">
+                Skip Turn
+            </button>
+            <button id="restartBtn" class="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2 px-4 rounded-lg">
+                Restart Game
+            </button>
+            <button id="undoBtn" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg">
+                Undo Move
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- Game Configuration ---
+        const DOTS = 6; // 6x6 grid of dots
+        const BOXES = DOTS - 1;
+        const RED = '#ef4444';
+        const BLUE = '#3b82f6';
+        const RED_LIGHT = 'rgba(239, 68, 68, 0.4)';
+        const BLUE_LIGHT = 'rgba(59, 130, 246, 0.4)';
+        const SUGGESTION_COLOR = '#facc15'; // Yellow
+        const DOT_COLOR = '#9ca3af';
+        const LINE_COLOR = '#d1d5db';
+        const DARK_DOT_COLOR = '#4b5563';
+        const DARK_LINE_COLOR = '#374151';
+
+        // --- Game State ---
+        let hLines, vLines, boxes;
+        let currentPlayer;
+        let scores;
+        let gameOver;
+        let gameStarted;
+        let dotRadius, spacing;
+        let history = [];
+
+        // --- UI Elements ---
+        const scoreRedEl = document.getElementById('score-red');
+        const scoreBlueEl = document.getElementById('score-blue');
+        const playerRedCard = document.getElementById('player-red-card');
+        const playerBlueCard = document.getElementById('player-blue-card');
+        const messageBox = document.getElementById('messageBox');
+        const messageText = document.getElementById('messageText');
+        const newGameBtn = document.getElementById('newGameBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const skipBtn = document.getElementById('skipBtn');
+        const undoBtn = document.getElementById('undoBtn');
+        const instructionText = document.getElementById('instructionText');
+
+        // --- Utility Functions ---
+        const isDarkMode = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+        /**
+         * Initializes or resets the game to its pre-start state.
+         */
+        function init() {
+            hLines = Array(BOXES).fill(0).map(() => Array(DOTS).fill(0));
+            vLines = Array(DOTS).fill(0).map(() => Array(BOXES).fill(0));
+            boxes = Array(BOXES).fill(0).map(() => Array(BOXES).fill(0));
+
+            scores = { red: 0, blue: 0 };
+            gameOver = false;
+            gameStarted = false;
+            currentPlayer = null;
+            history = [];
+
+            messageBox.classList.add('hidden');
+            messageBox.classList.remove('flex');
+            instructionText.classList.remove('hidden');
+
+            playerRedCard.style.cursor = 'pointer';
+            playerBlueCard.style.cursor = 'pointer';
+
+            resizeCanvas();
+            updateUI();
+            draw();
+        }
+
+        /**
+         * Starts the game with the selected player.
+         * @param {string} player - 'red' or 'blue'.
+         */
+        function startGame(player) {
+            if (gameStarted) return;
+            gameStarted = true;
+            currentPlayer = player;
+            instructionText.classList.add('hidden');
+
+            playerRedCard.style.cursor = 'default';
+            playerBlueCard.style.cursor = 'default';
+
+            updateUI();
+            draw();
+        }
+
+        /**
+         * Skips the current player's turn.
+         */
+        function skipTurn() {
+            if (gameOver || !gameStarted) return;
+            currentPlayer = currentPlayer === 'red' ? 'blue' : 'red';
+            updateUI();
+            draw();
+        }
+
+        /**
+         * Undoes the last move made.
+         */
+        function undoMove() {
+            if (history.length === 0 || !gameStarted || gameOver) return;
+            
+            const lastState = history.pop();
+            hLines = lastState.hLines;
+            vLines = lastState.vLines;
+            boxes = lastState.boxes;
+            scores = lastState.scores;
+            currentPlayer = lastState.currentPlayer;
+            gameOver = false; // Game cannot be over if we just undid a move
+
+            // Hide the game over message if it was visible
+            messageBox.classList.add('hidden');
+            messageBox.classList.remove('flex');
+
+            updateUI();
+            draw();
+        }
+
+        /**
+         * Adjusts canvas size to fit the container and recalculates drawing dimensions.
+         */
+        function resizeCanvas() {
+            const containerWidth = canvas.parentElement.clientWidth;
+            canvas.width = containerWidth;
+            canvas.height = containerWidth;
+            spacing = canvas.width / (DOTS + 1);
+            dotRadius = spacing / 8;
+            draw();
+        }
+
+        /**
+         * Updates score and player turn indicators in the UI.
+         */
+        function updateUI() {
+            scoreRedEl.textContent = scores.red;
+            scoreBlueEl.textContent = scores.blue;
+
+            skipBtn.disabled = !gameStarted || gameOver;
+            undoBtn.disabled = history.length === 0 || !gameStarted || gameOver;
+
+            if (gameOver) {
+                playerRedCard.classList.remove('active');
+                playerBlueCard.classList.remove('active');
+            } else {
+                playerRedCard.classList.toggle('active', currentPlayer === 'red');
+                playerBlueCard.classList.toggle('active', currentPlayer === 'blue');
+            }
+        }
+
+        /**
+         * Main drawing function. Renders the entire game board.
+         */
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawBoxes();
+            drawLines();
+            if (!gameOver && gameStarted) {
+                drawSuggestion();
+            }
+            drawDots();
+        }
+
+        /**
+         * Draws the dots on the canvas.
+         */
+        function drawDots() {
+            ctx.fillStyle = isDarkMode() ? DARK_DOT_COLOR : DOT_COLOR;
+            for (let i = 0; i < DOTS; i++) {
+                for (let j = 0; j < DOTS; j++) {
+                    ctx.beginPath();
+                    ctx.arc(spacing * (j + 1), spacing * (i + 1), dotRadius, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }
+        }
+
+        /**
+         * Draws the lines (both horizontal and vertical) on the canvas.
+         */
+        function drawLines() {
+            ctx.lineWidth = dotRadius / 1.5;
+            ctx.lineCap = 'round';
+
+            // Horizontal lines
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < DOTS; j++) {
+                    if (hLines[i][j]) {
+                        ctx.strokeStyle = hLines[i][j] === 'red' ? RED : BLUE;
+                        ctx.beginPath();
+                        ctx.moveTo(spacing * (i + 1), spacing * (j + 1));
+                        ctx.lineTo(spacing * (i + 2), spacing * (j + 1));
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // Vertical lines
+            for (let i = 0; i < DOTS; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    if (vLines[i][j]) {
+                        ctx.strokeStyle = vLines[i][j] === 'red' ? RED : BLUE;
+                        ctx.beginPath();
+                        ctx.moveTo(spacing * (i + 1), spacing * (j + 1));
+                        ctx.lineTo(spacing * (i + 1), spacing * (j + 2));
+                        ctx.stroke();
+                    }
+                }
+            }
+        }
+
+        /**
+         * Fills completed boxes with the player's color.
+         */
+        function drawBoxes() {
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    if (boxes[i][j]) {
+                        ctx.fillStyle = boxes[i][j] === 'red' ? RED_LIGHT : BLUE_LIGHT;
+                        ctx.fillRect(spacing * (i + 1) + dotRadius, spacing * (j + 1) + dotRadius, spacing - dotRadius * 2, spacing - dotRadius * 2);
+                    }
+                }
+            }
+        }
+        
+        /**
+         * Highlights the suggested move on the board.
+         */
+        function drawSuggestion() {
+            const move = getBestMove();
+            if (!move) return;
+
+            ctx.strokeStyle = SUGGESTION_COLOR;
+            ctx.lineWidth = dotRadius;
+            ctx.lineCap = 'round';
+            
+            ctx.beginPath();
+            if (move.type === 'h') {
+                ctx.moveTo(spacing * (move.x + 1), spacing * (move.y + 1));
+                ctx.lineTo(spacing * (move.x + 2), spacing * (move.y + 1));
+            } else { // 'v'
+                ctx.moveTo(spacing * (move.x + 1), spacing * (move.y + 1));
+                ctx.lineTo(spacing * (move.x + 1), spacing * (move.y + 2));
+            }
+            ctx.stroke();
+        }
+
+        /**
+         * Handles clicks or touches on the canvas to draw lines.
+         */
+        function handleInteraction(e) {
+            if (gameOver || !gameStarted) return;
+            e.preventDefault(); // Prevents unwanted behavior like double-tap zoom
+
+            let clientX, clientY;
+            if (e.touches) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const x = clientX - rect.left;
+            const y = clientY - rect.top;
+
+            const clickThreshold = spacing * 0.3;
+
+            // Check for horizontal line clicks
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < DOTS; j++) {
+                    const lineCenterX = spacing * (i + 1.5);
+                    const lineCenterY = spacing * (j + 1);
+                    if (Math.abs(x - lineCenterX) < spacing / 2 && Math.abs(y - lineCenterY) < clickThreshold) {
+                        if (!hLines[i][j]) {
+                            playMove('h', i, j);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Check for vertical line clicks
+            for (let i = 0; i < DOTS; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    const lineCenterX = spacing * (i + 1);
+                    const lineCenterY = spacing * (j + 1.5);
+                    if (Math.abs(x - lineCenterX) < clickThreshold && Math.abs(y - lineCenterY) < spacing / 2) {
+                        if (!vLines[i][j]) {
+                            playMove('v', i, j);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        
+        /**
+         * Processes a player's move.
+         * @param {string} type - 'h' for horizontal, 'v' for vertical.
+         * @param {number} x - The x-coordinate of the line in the grid.
+         * @param {number} y - The y-coordinate of the line in the grid.
+         */
+        function playMove(type, x, y) {
+            // Save the current state for the undo functionality
+            history.push({
+                hLines: JSON.parse(JSON.stringify(hLines)),
+                vLines: JSON.parse(JSON.stringify(vLines)),
+                boxes: JSON.parse(JSON.stringify(boxes)),
+                scores: { ...scores },
+                currentPlayer: currentPlayer
+            });
+
+            let scored = false;
+            if (type === 'h' && !hLines[x][y]) {
+                hLines[x][y] = currentPlayer;
+                scored = checkBoxCompletion(x, y, 'h');
+            } else if (type === 'v' && !vLines[x][y]) {
+                vLines[x][y] = currentPlayer;
+                scored = checkBoxCompletion(x, y, 'v');
+            } else {
+                // If the move was invalid (e.g., clicking an existing line), remove the saved history state
+                history.pop();
+                return;
+            }
+
+            if (!scored) {
+                currentPlayer = currentPlayer === 'red' ? 'blue' : 'red';
+            }
+
+            updateUI();
+            draw();
+            checkGameOver();
+        }
+
+        /**
+         * Checks if a move completes one or two boxes.
+         * @returns {boolean} - True if at least one box was completed.
+         */
+        function checkBoxCompletion(x, y, type) {
+            let boxCompleted = false;
+            if (type === 'h') {
+                // Check box below
+                if (y < BOXES && vLines[x][y] && vLines[x + 1][y] && hLines[x][y + 1]) {
+                    boxes[x][y] = currentPlayer;
+                    scores[currentPlayer]++;
+                    boxCompleted = true;
+                }
+                // Check box above
+                if (y > 0 && vLines[x][y - 1] && vLines[x + 1][y - 1] && hLines[x][y - 1]) {
+                    boxes[x][y - 1] = currentPlayer;
+                    scores[currentPlayer]++;
+                    boxCompleted = true;
+                }
+            } else { // type === 'v'
+                // Check box to the right
+                if (x < BOXES && hLines[x][y] && hLines[x][y + 1] && vLines[x + 1][y]) {
+                    boxes[x][y] = currentPlayer;
+                    scores[currentPlayer]++;
+                    boxCompleted = true;
+                }
+                // Check box to the left
+                if (x > 0 && hLines[x - 1][y] && hLines[x - 1][y + 1] && vLines[x - 1][y]) {
+                    boxes[x - 1][y] = currentPlayer;
+                    scores[currentPlayer]++;
+                    boxCompleted = true;
+                }
+            }
+            return boxCompleted;
+        }
+
+        /**
+         * Checks if the game is over and displays the winner.
+         */
+        function checkGameOver() {
+            if (scores.red + scores.blue === BOXES * BOXES) {
+                gameOver = true;
+                let winnerText;
+                if (scores.red > scores.blue) {
+                    winnerText = "Red Wins!";
+                } else if (scores.blue > scores.red) {
+                    winnerText = "Blue Wins!";
+                } else {
+                    winnerText = "It's a Draw!";
+                }
+                messageText.textContent = winnerText;
+                messageBox.classList.remove('hidden');
+                messageBox.classList.add('flex');
+                updateUI();
+            }
+        }
+        
+        // --- AI Suggester Logic ---
+
+        /**
+         * Counts the number of sides for a given box.
+         * @param {number} x - The x-coordinate of the box.
+         * @param {number} y - The y-coordinate of the box.
+         * @returns {number} - The number of sides (0-4).
+         */
+        function countSides(x, y) {
+            let count = 0;
+            if (hLines[x][y]) count++; // Top
+            if (hLines[x][y + 1]) count++; // Bottom
+            if (vLines[x][y]) count++; // Left
+            if (vLines[x + 1][y]) count++; // Right
+            return count;
+        }
+
+        /**
+         * The main AI function to determine the best move.
+         * Strategy:
+         * 1. If a move completes a box, take it.
+         * 2. Otherwise, find a "safe" move that doesn't give the opponent a box.
+         * 3. If no safe moves exist, make a "sacrificial" move that gives away the fewest boxes.
+         * @returns {object|null} - The best move object {type, x, y} or null if no moves left.
+         */
+        function getBestMove() {
+            let safeMoves = [];
+            let sacrificialMoves = [];
+
+            // --- Horizontal Lines ---
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < DOTS; j++) {
+                    if (!hLines[i][j]) {
+                        // Temporarily make the move
+                        hLines[i][j] = currentPlayer;
+                        let completesBox = false;
+                        let createsThirdSide = false;
+
+                        // Check box below
+                        if (j < BOXES) {
+                            const sides = countSides(i, j);
+                            if (sides === 4) completesBox = true;
+                            if (sides === 3) createsThirdSide = true;
+                        }
+                        // Check box above
+                        if (j > 0) {
+                            const sides = countSides(i, j - 1);
+                            if (sides === 4) completesBox = true;
+                            if (sides === 3) createsThirdSide = true;
+                        }
+                        
+                        // Undo the move
+                        hLines[i][j] = 0;
+                        
+                        // Categorize the move
+                        if (completesBox) return { type: 'h', x: i, y: j }; // Priority 1: Take a box
+                        if (!createsThirdSide) {
+                            safeMoves.push({ type: 'h', x: i, y: j });
+                        } else {
+                            sacrificialMoves.push({ type: 'h', x: i, y: j });
+                        }
+                    }
+                }
+            }
+
+            // --- Vertical Lines ---
+            for (let i = 0; i < DOTS; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    if (!vLines[i][j]) {
+                        // Temporarily make the move
+                        vLines[i][j] = currentPlayer;
+                        let completesBox = false;
+                        let createsThirdSide = false;
+
+                        // Check box to the right
+                        if (i < BOXES) {
+                            const sides = countSides(i, j);
+                            if (sides === 4) completesBox = true;
+                            if (sides === 3) createsThirdSide = true;
+                        }
+                        // Check box to the left
+                        if (i > 0) {
+                            const sides = countSides(i - 1, j);
+                            if (sides === 4) completesBox = true;
+                            if (sides === 3) createsThirdSide = true;
+                        }
+
+                        // Undo the move
+                        vLines[i][j] = 0;
+
+                        if (completesBox) return { type: 'v', x: i, y: j }; // Priority 1
+                        if (!createsThirdSide) {
+                            safeMoves.push({ type: 'v', x: i, y: j });
+                        } else {
+                            sacrificialMoves.push({ type: 'v', x: i, y: j });
+                        }
+                    }
+                }
+            }
+            
+            // Priority 2: Make a safe move
+            if (safeMoves.length > 0) {
+                return safeMoves[Math.floor(Math.random() * safeMoves.length)]; // Pick a random safe move
+            }
+            
+            // Priority 3: Make a sacrificial move (if no other option)
+            // A more advanced AI would calculate the shortest chain to sacrifice.
+            // For this version, we just pick any of the available "bad" moves.
+            if (sacrificialMoves.length > 0) {
+                return sacrificialMoves[Math.floor(Math.random() * sacrificialMoves.length)];
+            }
+
+            return null; // No moves left
+        }
+
+        // --- Event Listeners ---
+        canvas.addEventListener('mousedown', handleInteraction); // For desktop
+        canvas.addEventListener('touchstart', handleInteraction); // For mobile
+        newGameBtn.addEventListener('click', init);
+        restartBtn.addEventListener('click', init);
+        skipBtn.addEventListener('click', skipTurn);
+        undoBtn.addEventListener('click', undoMove);
+        window.addEventListener('resize', resizeCanvas);
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+        
+        // Add listeners to player cards to start the game
+        playerRedCard.addEventListener('click', () => startGame('red'));
+        playerBlueCard.addEventListener('click', () => startGame('blue'));
+
+        // --- Initial Game Setup ---
+        init();
+    </script>
+</body>
+</html>
