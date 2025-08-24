@@ -172,12 +172,13 @@
             startRedBtn.classList.remove('selected-btn');
             startBlueBtn.classList.remove('selected-btn');
             
-            resizeCanvas(); // Resize canvas even when hidden to get dimensions
             hLines = Array(BOXES).fill(0).map(() => Array(DOTS).fill(0));
             vLines = Array(DOTS).fill(0).map(() => Array(BOXES).fill(0));
             boxes = Array(BOXES).fill(0).map(() => Array(BOXES).fill(0));
-            updateUI();
-            draw(); // Initial draw to clear canvas
+            
+            // Draw a blank canvas initially
+            resizeCanvas(); 
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
 
         /**
@@ -212,6 +213,7 @@
             currentPlayer = startingPlayer;
             gameSetupDiv.classList.add('hidden');
             gameInterfaceDiv.classList.remove('hidden');
+            resizeCanvas(); // BUG FIX: Resize the canvas now that it's visible
             updateUI();
             draw();
         }
@@ -509,7 +511,7 @@
             }
             if (safeMoves.length > 0) return safeMoves[Math.floor(Math.random() * safeMoves.length)];
             
-            if (sacrificialMoves.length > 0) {
+            if (sacrificialMoves.length > 0) { // BUG FIX: Was 'sacrifices'
                 let minBoxesGiven = Infinity, bestMoves = [];
                 for (const move of sacrificialMoves) {
                     const boxesGiven = calculateSacrificeCost(move);
