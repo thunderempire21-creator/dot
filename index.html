@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -176,14 +177,10 @@
             vLines = Array(DOTS).fill(0).map(() => Array(BOXES).fill(0));
             boxes = Array(BOXES).fill(0).map(() => Array(BOXES).fill(0));
             
-            // Draw a blank canvas initially
             resizeCanvas(); 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
 
-        /**
-         * Handles selection of AI player and starting player.
-         */
         function selectAiPlayer(player) {
             aiAssistedPlayer = player;
             assistRedBtn.classList.toggle('selected-btn', player === 'red');
@@ -204,16 +201,13 @@
             }
         }
 
-        /**
-         * Starts the game after setup.
-         */
         function startGame() {
             if (!aiAssistedPlayer || !startingPlayer) return;
             gameStarted = true;
             currentPlayer = startingPlayer;
             gameSetupDiv.classList.add('hidden');
             gameInterfaceDiv.classList.remove('hidden');
-            resizeCanvas(); // BUG FIX: Resize the canvas now that it's visible
+            resizeCanvas();
             updateUI();
             draw();
         }
@@ -443,7 +437,8 @@
             }
         }
         
-        // --- AI Suggester Logic ---
+        // --- GRANDMASTER AI LOGIC ---
+
         function countSides(x, y) {
             let count = 0;
             if (hLines[x][y]) count++; if (hLines[x][y + 1]) count++;
@@ -458,35 +453,89 @@
             return count;
         }
 
-        function calculateSacrificeCost(move) {
+        function analyzeChains(h, v) {
+            const chains = [];
+            const visited = Array(BOXES).fill(0).map(() => Array(BOXES).fill(false));
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    if (!visited[i][j] && countSidesOnTemp(i, j, h, v) === 2) {
+                        let currentChainLength = 0;
+                        const queue = [[i, j]];
+                        visited[i][j] = true;
+                        while (queue.length > 0) {
+                            const [cx, cy] = queue.shift();
+                            currentChainLength++;
+                            const neighbors = [[cx, cy - 1], [cx, cy + 1], [cx - 1, cy], [cx + 1, cy]];
+                            for (const [nx, ny] of neighbors) {
+                                if (nx >= 0 && nx < BOXES && ny >= 0 && ny < BOXES && !visited[nx][ny]) {
+                                    if (countSidesOnTemp(nx, ny, h, v) === 2) {
+                                        if ((nx === cx && !v[cx][Math.min(ny, cy)]) || (ny === cy && !h[Math.min(nx, cx)][cy])) {
+                                            visited[nx][ny] = true;
+                                            queue.push([nx, ny]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        chains.push(currentChainLength);
+                    }
+                }
+            }
+            return chains;
+        }
+
+        function simulateEndgame(move) {
             let tempHLines = JSON.parse(JSON.stringify(hLines));
             let tempVLines = JSON.parse(JSON.stringify(vLines));
             let tempBoxes = JSON.parse(JSON.stringify(boxes));
-            if (move.type === 'h') tempHLines[move.x][move.y] = 'player';
-            else tempVLines[move.x][move.y] = 'player';
-            let boxesTaken = 0;
+            if (move.type === 'h') tempHLines[move.x][move.y] = currentPlayer;
+            else tempVLines[move.x][move.y] = currentPlayer;
+            let opponentScore = 0;
             let newBoxCompleted;
             do {
                 newBoxCompleted = false;
                 for (let i = 0; i < BOXES; i++) {
                     for (let j = 0; j < BOXES; j++) {
                         if (!tempBoxes[i][j] && countSidesOnTemp(i, j, tempHLines, tempVLines) === 4) {
-                            tempBoxes[i][j] = 'opponent'; 
-                            boxesTaken++;
-                            newBoxCompleted = true; 
+                            tempBoxes[i][j] = 'opponent';
+                            opponentScore++;
+                            newBoxCompleted = true;
                             if (!tempHLines[i][j]) tempHLines[i][j] = 'opponent';
-                            else if (!tempHLines[i][j + 1]) tempHLines[i][j + 1] = 'opponent';
+                            else if (!tempHLines[i][j+1]) tempHLines[i][j+1] = 'opponent';
                             else if (!tempVLines[i][j]) tempVLines[i][j] = 'opponent';
-                            else if (!tempVLines[i + 1][j]) tempVLines[i + 1][j] = 'opponent';
+                            else if (!tempVLines[i+1][j]) tempVLines[i+1][j] = 'opponent';
                         }
                     }
                 }
             } while (newBoxCompleted);
-            return boxesTaken;
+            const remainingChains = analyzeChains(tempHLines, tempVLines);
+            let myScore = 0;
+            for (let i = 0; i < remainingChains.length; i++) {
+                if (i % 2 === 0) myScore += remainingChains[i];
+                else opponentScore += remainingChains[i];
+            }
+            return myScore - opponentScore;
+        }
+        
+        function analyzeSafeMove(move) {
+            let tempHLines = JSON.parse(JSON.stringify(hLines));
+            let tempVLines = JSON.parse(JSON.stringify(vLines));
+            if (move.type === 'h') tempHLines[move.x][move.y] = currentPlayer;
+            else tempVLines[move.x][move.y] = currentPlayer;
+            let twoSidedBoxes = 0;
+            for (let i = 0; i < BOXES; i++) {
+                for (let j = 0; j < BOXES; j++) {
+                    if (countSidesOnTemp(i, j, tempHLines, tempVLines) === 2) {
+                        twoSidedBoxes++;
+                    }
+                }
+            }
+            return twoSidedBoxes;
         }
 
         function getBestMove() {
             let safeMoves = [], sacrificialMoves = [];
+            
             for (let i = 0; i < BOXES; i++) {
                 for (let j = 0; j < DOTS; j++) {
                     if (!hLines[i][j]) {
@@ -509,16 +558,31 @@
                     }
                 }
             }
-            if (safeMoves.length > 0) return safeMoves[Math.floor(Math.random() * safeMoves.length)];
             
-            if (sacrificialMoves.length > 0) { // BUG FIX: Was 'sacrifices'
-                let minBoxesGiven = Infinity, bestMoves = [];
+            if (safeMoves.length > 0) {
+                let minScore = Infinity;
+                let bestSafeMoves = [];
+                for (const move of safeMoves) {
+                    const score = analyzeSafeMove(move);
+                    if (score < minScore) {
+                        minScore = score;
+                        bestSafeMoves = [move];
+                    } else if (score === minScore) {
+                        bestSafeMoves.push(move);
+                    }
+                }
+                return bestSafeMoves[Math.floor(Math.random() * bestSafeMoves.length)];
+            }
+            
+            if (sacrificialMoves.length > 0) {
+                let bestScoreDiff = -Infinity;
+                let bestMoves = [];
                 for (const move of sacrificialMoves) {
-                    const boxesGiven = calculateSacrificeCost(move);
-                    if (boxesGiven < minBoxesGiven) {
-                        minBoxesGiven = boxesGiven;
+                    const scoreDiff = simulateEndgame(move);
+                    if (scoreDiff > bestScoreDiff) {
+                        bestScoreDiff = scoreDiff;
                         bestMoves = [move];
-                    } else if (boxesGiven === minBoxesGiven) {
+                    } else if (scoreDiff === bestScoreDiff) {
                         bestMoves.push(move);
                     }
                 }
@@ -547,3 +611,4 @@
     </script>
 </body>
 </html>
+
